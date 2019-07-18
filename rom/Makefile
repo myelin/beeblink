@@ -58,12 +58,15 @@ build:
 # making a mess...
 	$(MAKE) _rom "BUILD_TIME=$(BUILD_TIME)" ROM_SUFFIX=avr_fe60 ROM_BEEB_NAME=AVRFE60 LINK=avr CMD_PREFIX=AVR "EXTRA_ARGS=-Dlink_avr_via=65120"
 
+# 64672 = $fca0
+	$(MAKE) _rom "BUILD_TIME=$(BUILD_TIME)" ROM_SUFFIX=elk_fca0 ROM_BEEB_NAME=ELKFCA0 LINK=elk CMD_PREFIX=ELK "EXTRA_ARGS=-Dlink_elk_port=64672"
+
 	$(MAKE) _rom "BUILD_TIME=$(BUILD_TIME)" ROM_SUFFIX=tube_serial ROM_BEEB_NAME=TS LINK=tube_serial CMD_PREFIX=TS
 
 	$(MAKE) _rom "BUILD_TIME=$(BUILD_TIME)" ROM_SUFFIX=upurs_fe60 ROM_BEEB_NAME=UPUFE60 LINK=upurs CMD_PREFIX=U "EXTRA_ARGS=-Dlink_upurs_via=65120"
 
 	@echo ---
-	@$(PYTHON) ../tools/sha1sum.py -x '$(VER)' -x '$(BUILD_TIME)' -x '$(COMMIT)' .build/beeblink_tube_serial.rom .build/beeblink_avr_fe60.rom .build/beeblink_upurs_fe60.rom
+	@$(PYTHON) ../tools/sha1sum.py -x '$(VER)' -x '$(BUILD_TIME)' -x '$(COMMIT)' .build/beeblink_tube_serial.rom .build/beeblink_elk_fca0.rom .build/beeblink_avr_fe60.rom .build/beeblink_upurs_fe60.rom
 
 ##########################################################################
 ##########################################################################

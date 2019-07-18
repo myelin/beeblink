@@ -1,0 +1,451 @@
+;-------------------------------------------------------------------------
+;
+; BeebLink - BBC Micro file storage system
+; Copyright (C) 2018 Tom Seddon
+; Copyright 2019 Google LLC
+;
+; This program is free software: you can redistribute it and/or
+; modify it under the terms of the GNU General Public License as
+; published by the Free Software Foundation, either version 3 of the
+; License, or (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful, but
+; WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+; General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program. If not, see
+; <https://www.gnu.org/licenses/>.
+;
+;-------------------------------------------------------------------------
+
+                .section link_startup_workspace
+num_sync_zeros_received: .fill 2
+startup_counter: .fill 2
+                .send link_startup_workspace
+
+                .section link_workspace
+                .send link_workspace
+
+;-------------------------------------------------------------------------
+
+                .weak
+link_elk_port=$fca0
+                .endweak
+
+elk: .block
+
+                .section code
+
+serial_data=link_elk_port
+serial_status=link_elk_port+1
+serial_tx_ready=$02
+serial_rx_ready=$01
+
+; Uncomment for verbose debugging of transmitted bytes
+txdp: .macro items
+                ; .debug_print \items
+                .endm
+
+;-------------------------------------------------------------------------
+;
+; Configure a prepared VIA for the receive operation. Must have
+; previously called serial_prepare!
+;
+; preserves: X; Y; C
+;
+serial_begin_recv: .proc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Configure a prepared VIA for a send operation. Must have previously
+; called serial_prepare!
+;
+; preserves: X; Y; C
+;
+serial_begin_send: .proc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+; Prepare VIA for use, setting it up for the initial send operation.
+;
+; must preserve A
+serial_prepare: .proc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; The opposite of serial_prepare, setting it up again for non-use.
+;
+serial_unprepare: .proc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Send byte.
+;
+; preserves: X; Y; C
+;
+send_byte: .macro
+                .txdp ['send_byte: sending &',DP_A]
+                pha
+
+                ; wait for outgoing buffer space
+-
+                lda serial_status
+                and #serial_tx_ready
+                beq -
+
+                ; send byte
+                pla
+                sta serial_data
+                .txdp ['\r']
+                .endm
+
+send_header_byte: .proc
+                ; just send the single byte, no confirmation byte necessary
+                .send_byte
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Send payload byte and confirmation byte if necessary.
+;
+; preserves: X; Y; C
+;
+send_payload_byte: .proc
+                ; send payload byte
+                .send_byte
+
+                ; send 0x01 confirmation byte if the byte's negated offset is zero
+                lda payload_counter+0
+                bne +
+                lda #1
+                .send_byte
++
+
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Send byte in Y if remote has space, otherwise drop it.
+;
+; exit: C=0 if remote did not have space
+;       C=1 if remote had space and byte was sent
+send_byte_in_y_nonblocking: .proc
+                lda serial_status
+                and #serial_tx_ready
+                beq no_room
+
+                sty serial_data
+                sec
+                rts
+
+no_room:
+                clc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Receive byte.
+;
+; exit: A = byte read
+;       N, Z = set as per byte read
+; preserves: X; Y; C
+recv_byte: .macro
+-
+                lda serial_status
+                and #serial_rx_ready
+                beq -
+
+                lda serial_data
+                .endm
+
+;-------------------------------------------------------------------------
+
+recv_header_byte: .proc
+                .recv_byte
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+
+recv_payload_byte: .proc
+                lda payload_counter+0
+                beq recv_status_byte
+
+recv_data_byte:
+                .recv_byte
+                rts
+
+recv_status_byte:
+                jsr recv_data_byte
+                pha             ;save data byte
+
+                ; receive and ignore status byte
+                .recv_byte
+
+                pla             ;restore data byte
+                rts
+
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Receive byte without blocking.
+;
+; exit: C=0 if no data was available
+;       C=1 if data was available, A = value read
+recv_byte_nonblocking: .proc
+                lda serial_status
+                and #serial_rx_ready
+                beq no_byte
+
+                lda serial_data
+                sec
+                rts
+
+no_byte:
+                clc
+                rts
+                .pend
+
+;-------------------------------------------------------------------------
+;
+; Initialise link and determine status.
+;
+; exit: C=0 if link OK
+;       C=1 if link not OK
+;           X = offset into link_status_text of text describing status,
+;               terminated by 0 (this is indeed not consistent)
+
+startup: .proc
+                lda #4
+                jsr reset_startup_counter
+
+start_sync:
+                lda #0
+                sta num_sync_zeros_received+0
+                sta num_sync_zeros_received+1
+
+                .block
+                .debug_print ['Sync step 0...\r']
+                lda #1
+                jsr reset_startup_counter
+sync_step_0_loop:
+                ldy #status_text.sync_timed_out_0-status_text
+                jsr check_startup_counter
+
+                ldy #$80
+                jsr send_byte_in_y_nonblocking
+
+                bcc sync_step_0_loop
+                .bend
+
+                .block
+                .debug_print ['Sync step 1...\r']
+                lda #255
+                jsr reset_startup_counter
+sync_step_1_loop:
+; .print ['&00: sent: &',num_sync_zeros_sent+1,num_sync_zeros_sent+0,'; received: &',num_sync_zeros_received+1,num_sync_zeros_received+0,'\r']
+                ldy #status_text.sync_timed_out_1-status_text
+                jsr check_startup_counter
+
+                ; Try to write $00. If it didn't get sent, no
+                ; problem... plenty more where that came from.
+                ldy #$00
+                jsr send_byte_in_y_nonblocking
+
+                ; Try to get more data. If none available, just carry
+                ; on looping.
+                jsr recv_byte_nonblocking
+                bcc sync_step_1_loop
+
+                ; If a non-0 was received, restart the sync process.
+                cmp #0
+                bne start_sync
+
+                ; Count one more zero received.
+                ldx #num_sync_zeros_received
+                jsr add1z16
+
+                ; Keep going if required number not reached.
+                lda num_sync_zeros_received+0
+                cmp #<NUM_SERIAL_SYNC_ZEROS
+                bne sync_step_1_loop
+
+                lda num_sync_zeros_received+1
+                cmp #>NUM_SERIAL_SYNC_ZEROS
+                bne sync_step_1_loop
+                .bend
+
+                .block
+                ; Keep reading until the 1 byte is received. Continue
+                ; sending zeros meanwhile.
+                .debug_print ['Sync step 2...\r']
+                lda #16
+                jsr reset_startup_counter
+sync_step_2_loop:
+                ldy #status_text.sync_timed_out_2-status_text
+                jsr check_startup_counter
+
+                ; Try to write $00. If it didn't get sent, no
+                ; problem... plenty more where that came from.
+                ldy #$00
+                jsr send_byte_in_y_nonblocking
+
+                jsr recv_byte_nonblocking
+                bcc sync_step_2_loop
+
+                cmp #0
+                beq sync_step_2_loop
+
+                cmp #1
+                bne failed
+                .bend
+
+                .block
+                ; Send a single non-zero byte.
+                .debug_print ['Sync step 3...\r']
+                lda #16
+                jsr reset_startup_counter
+sync_step_3_loop:
+                ldy #status_text.sync_timed_out_3-status_text
+                jsr check_startup_counter
+
+                ldy #$01
+                jsr send_byte_in_y_nonblocking
+                bcc sync_step_3_loop
+                .bend
+ok:
+                .debug_print ['Sync success (probably)\r']
+                clc             ;good
+                rts
+
+failed:
+                ldx #status_text.sync_failed-status_text
+                sec             ;no good
+                rts
+
+                ; A = counter/256
+reset_startup_counter:
+                eor #$ff
+                clc
+                adc #1
+                sta startup_counter+1
+                lda #0
+                sta startup_counter+0
+                rts
+
+check_startup_counter:
+                ldx #startup_counter
+                jsr add1z16
+                bne +
+                ; naughty hack.
+                pla
+                pla
+                tya
+                tax
+                ; ldx #status_text.sync_timed_out-status_text
+                sec
++
+                rts
+
+                .pend
+
+status_text: .block
+sync_failed:
+                .text 'Sync failed',0
+sync_timed_out_0:
+                .text 'Sync timeout (step 0)',0
+sync_timed_out_1:
+                .text 'Sync timeout (step 1)',0
+sync_timed_out_2:
+                .text 'Sync timeout (step 2)',0
+sync_timed_out_3:
+                .text 'Sync timeout (step 3)',0
+                .bend
+
+
+
+;-------------------------------------------------------------------------
+
+                .send code
+                .bend
+
+;-------------------------------------------------------------------------
+
+; Link interface.
+
+link_name=format("Elk &%04X",elk.serial_data)
+
+; Prepare link. Get everything ready and put it in send mode.
+;
+; Preserve A/X/Y.
+link_prepare=elk.serial_prepare
+
+; Unrepare link. Do whatever's necessary.
+link_unprepare=elk.serial_unprepare
+
+; Put prepared link in receive mode.
+link_begin_recv=elk.serial_begin_recv
+
+; Send 1 byte over the link as part of the header: the type byte, or
+; one of the size bytes.
+;
+; Preserve X/Y.
+link_send_header_byte=elk.send_header_byte
+
+; Send 1 byte over the link as part of the payload.
+; payload_counter is the byte's negated offset.
+;
+; Preserve X/Y.
+link_send_payload_byte=elk.send_payload_byte
+
+; Receive 1 byte over the link as part of the header: the type byte,
+; or one of the size bytes.
+;
+; Preserve X/Y.
+link_recv_header_byte=elk.recv_header_byte
+
+; Receive 1 byte over the link as part of the payload.
+; payload_counter is the byte's negated offset.
+;
+; Preserve X/Y.
+link_recv_payload_byte=elk.recv_payload_byte
+
+; Initialise link and determine status.
+;
+; exit: C=0 if link OK
+;       C=1 if link not OK
+;           X = offset into link_status_text of text describing status,
+;               terminated by 0 (this is indeed not consistent)
+link_startup=elk.startup
+link_status_text=elk.status_text
+
+; Send/receive file data from/to host/parasite memory.
+;
+; File data is whatever's left in the current packet according to
+; payload_counter, the non-zero negated number of bytes left. The data
+; is read/written starting at payload_addr (a 32-bit address that's
+; already known to point into host/parasite memory as appropriate).
+;
+; May modify payload_counter.
+;
+; If not set, link-agnostic code will be used, that uses
+; link_(send|recv)_byte* for everything. (This will probably be a lot
+; less efficient! For the AVR, for example, the throughput is <25%
+; that of the link-specific versions.)
+;link_send_file_data_parasite=elk.send_file_data_parasite_pagewise
+;link_send_file_data_host=elk.send_file_data_host_pagewise
+;link_recv_file_data_parasite=elk.recv_file_data_parasite_pagewise
+;link_recv_file_data_host=elk.recv_file_data_host_pagewise

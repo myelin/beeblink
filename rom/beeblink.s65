@@ -104,7 +104,7 @@ brkthunk=$100
 ; avoid that...
 brkthunk_max_size=$128-brkthunk
 
-; Can this ever move??
+; ROM workspace table (AUG p281)
 roms_table=$DF0
 
 ; Key to hold down to select this filing system on BREAK (AUG p143)
@@ -312,11 +312,14 @@ rom_copyright:
 
                 .weak
 link_avr=false
+link_elk=false
 link_tube_serial=false
                 .endweak
                 
                 .if link_avr
                 .include "avr.s65"
+                .elsif link_elk
+                .include "elk.s65"
                 .elsif link_tube_serial
                 .include "tube_serial.s65"
                 .elsif link_upurs
