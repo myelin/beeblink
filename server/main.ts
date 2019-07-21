@@ -33,8 +33,8 @@ import { Chalk } from 'chalk';
 import chalk from 'chalk';
 import * as gitattributes from './gitattributes';
 import * as http from 'http';
-import Request from './Request';
-import Response from './Response';
+import Request from './request';
+import Response from './response';
 import * as SerialPort from 'serialport';
 import * as os from 'os';
 
